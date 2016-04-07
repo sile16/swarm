@@ -55,8 +55,9 @@ class JobLogger():
 
 
     def process_server_control(self,topic,msg):
-        print("Received control Topic: {}  cmd: {}".format(topic, msg))
-        if topic == 'worker':
+        print("Received control Topic: {}  msg: {}".format(topic, msg))
+
+        if topic == 'worker' and 'cmd' in msg:
             if msg['cmd'] == 'init':
                 self.job = common.job_loggers[msg['job']]
                 self.heartbeats = {w:datetime.datetime.now() for w in msg['workers']}
@@ -85,17 +86,6 @@ class JobLogger():
         self.job.finish()
 
 
-
-    def display(self):
-        #stdscr.addstr("testing123")
-        #stdscr.addstr(self.finished_workers)
-        #stdscr.refresh()
-        pass
-
-
-
-
-
     def main_loop(self):
         #setup polling device
         poller = zmq.Poller()
@@ -108,7 +98,7 @@ class JobLogger():
 
         start = datetime.datetime.now()
         last_log = datetime.datetime.now()
-        last_display = datetime.datetime.now()
+
         while should_continue:
             socks = dict(poller.poll(100))
 
@@ -125,7 +115,8 @@ class JobLogger():
 
 
             now = datetime.datetime.now()
-            if self.state == 'waiting' and (now-start) > datetime.timedelta(seconds=10):
+            if self.state == 'waiting' and (now-start) > datetime.timedelta(seconds=5):
+                print("Annoucing to server")
                 self.notify_server()
                 start = datetime.datetime.now()
 
@@ -133,13 +124,13 @@ class JobLogger():
                 last_log = now
                 for worker in self.workers:
                     if worker not in self.finished_workers:
-                        if (now - self.heartbeats[worker]) > datetime.timedelta(seconds=10):
+                        if (now - self.heartbeats[worker]) > datetime.timedelta(seconds=30):
                             #worker stopped sending heartbeats.  Mark as dead
                             self.finished_workers.add(worker)
                             print("worker dead: {}".format(worker))
 
                 #Once all workers are either finished or timedout we are done:
-                if len(self.finished_workers) == len(self.workers):
+                if len(self.finished_workers) >= len(self.workers):
                     #we are done
                     self.state = 'waiting'
                     print("Finished! going to waiting state")
@@ -147,12 +138,6 @@ class JobLogger():
                     msg = {'cmd':'logger_finished','logger': self.logger_ip_port}
                     self.socket_req.send_json(msg)
                     self.socket_req.recv()
-
-
-            if (now-last_display) > datetime.timedelta(seconds=5):
-                self.display()
-
-
 
 
 def main():

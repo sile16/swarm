@@ -2,6 +2,7 @@ import zmq
 import common
 import argparse
 import json
+import time
 
 
 class JobManager():
@@ -18,6 +19,8 @@ class JobManager():
 
         self.socket_rep = self.context.socket(zmq.REP)
         self.socket_rep.bind('tcp://*:%s' % common.server_port)
+        self.poller = zmq.Poller()
+        self.poller.register(self.socket_rep,zmq.POLLIN)
 
         self.socket_logger = self.context.socket(zmq.PUSH)
         self.socket_work = self.context.socket(zmq.PUSH)
@@ -28,6 +31,9 @@ class JobManager():
 
         #Loop until all clients connect
         self.state_ready = False
+
+
+        self.nonce = str(time.time())
 
     def send_control(self,msg,topic='worker'):
         self.socket_pub.send('{} {}'.format(topic,json.dumps(msg)))
@@ -54,57 +60,65 @@ class JobManager():
 
 
     def process_msg(self):
-        print("waiting for message")
-        msg = self.socket_rep.recv_json()
 
-        print("-> msg:{}".format(msg))
+        #sleep for 5 seconds wait for message
+        socks = dict(self.poller.poll(5000))
 
-        if msg['cmd'] == 'new_worker':
-            self.workers.add(msg['worker'])
-            self.socket_rep.send_json("ok")
+        if self.socket_rep in socks and socks[self.socket_rep] == zmq.POLLIN:
+            msg = self.socket_rep.recv_json()
 
-        elif msg['cmd'] == 'new_logger':
-            #pass along message to all the workers
-            self.connect_logger(msg['logger'])
-            self.socket_rep.send_json("ok")
+            print("-> msg:{}".format(msg))
 
-        elif msg['cmd'] == 'worker_ready':
-            self.ready_workers.add(msg['worker'])
-            self.socket_rep.send_json("ok")
+            if msg['cmd'] == 'new_worker':
+                self.workers.add(msg['worker'])
+                self.socket_rep.send_json("ok")
 
-        elif msg['cmd'] == 'logger_finished':
-            exit()
+            elif msg['cmd'] == 'new_logger':
+                #pass along message to all the workers
+                self.connect_logger(msg['logger'])
+                self.socket_rep.send_json("ok")
 
-        else:
-            self.socket_rep.send_json('Error: Unkown cmd')
+            elif msg['cmd'] == 'worker_ready':
+                self.ready_workers.add(msg['worker'])
+                self.socket_rep.send_json("ok")
+
+            elif msg['cmd'] == 'logger_finished':
+                self.socket_rep.send_json("ok")
+                exit()
+
+            else:
+                self.socket_rep.send_json('Error: Unkown cmd')
 
 
     def send_work(self,msg):
         self.socket_work.send_json(msg)
 
     def stage_job(self):
-        while self.logger_ip_port is None or len(self.workers) < self.args.workers :
+        while self.logger_ip_port is None or len(self.ready_workers) < self.args.workers :
             print("Logger: {}".format(self.logger_ip_port))
             print("Worker Count: {}".format(len(self.workers)))
             self.process_msg()
 
-    def init_job(self):
+            #if we have met the minimum node count start sending new inits on each new node
+            if self.logger_ip_port and len(self.workers) >= self.args.workers:
+                print('Sending job init cmd')
+                self.send_job_init()
+
+        #We Are ready
+        self.connect_workers()
+
+    def send_job_init(self):
         #Send job initalization information, block until all workers are ready, connect to workers
         self.send_log({'msg':"Starting job: {0}".format(self.job.get_name())},type='info')
         job_config = self.job.init(self.args)
         self.send_control({'cmd':'init',
+                           'nonce':self.nonce,
                            'job':self.job.get_name(),
                            'threads':self.args.threads,
                            'workers':list(self.workers),
                            'logger':self.logger_ip_port,
                            'job_config':job_config})
 
-    def wait_init(self):
-        while len(self.ready_workers) < self.args.workers:
-            self.process_msg()
-
-        #Connect
-        self.connect_workers()
 
     def run_job(self):
         for item in self.job.get_work():
@@ -143,14 +157,8 @@ def main():
 
 
     #Wait for everyone to connect
-    print('Waiting for workers and logger')
+    print('Waiting for workers and logger to connect and init')
     job_manager.stage_job()
-
-    print('Initialize Job ')
-    job_manager.init_job()
-
-    print('Waiting for Init')
-    job_manager.wait_init()
 
     print('Sending work items')
     job_manager.run_job()

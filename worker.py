@@ -39,6 +39,7 @@ class JobWorker():
         self.logger_ip_port = None
         self.logger = None
         self.job = None
+        self.nonce = None
 
         #'waiting' -> 'running' -> 'finish' -> waiting
         self.state = 'waiting'
@@ -79,12 +80,19 @@ class JobWorker():
             self.notify_server()
 
         elif msg['cmd'] == 'init':
-            self.connect_logger(msg['logger'])
-            self.job = common.job_workers[msg['job']]
-            self.job.init(msg,self)
-            self.notify_server(cmd='worker_ready')
-            self.state = 'running'
-            print("state == running")
+
+            if self.nonce != msg['nonce']:
+                print("init: new init")
+                self.connect_logger(msg['logger'])
+                self.job = common.job_workers[msg['job']]
+                self.job.init(msg,self)
+                self.notify_server(cmd='worker_ready')
+                self.state = 'running'
+                self.nonce = msg['nonce']
+            else:
+                print("Duplicate init")
+                self.job.init(msg,self)
+
 
         elif msg['cmd'] == 'finish':
             self.state = 'finish'
@@ -124,7 +132,6 @@ class JobWorker():
             if self.socket_pull in socks and socks[self.socket_pull] == zmq.POLLIN:
                 msg = self.socket_pull.recv_json()
                 self.process_server_work(msg)
-                print("#")
                 last_work = now
 
 
